@@ -16,6 +16,7 @@
 #include <linux/delay.h>
 #include <linux/module.h>
 #include <linux/interrupt.h>
+#include <linux/bitops.h>
 
 #include <linux/iio/iio.h>
 #include <linux/iio/sysfs.h>
@@ -25,27 +26,23 @@
 
 #include <linux/platform_data/ad7298.h>
 
-#define AD7298_WRITE	(1 << 15) /* write to the control register */
-#define AD7298_REPEAT	(1 << 14) /* repeated conversion enable */
-#define AD7298_CH(x)	(1 << (13 - (x))) /* channel select */
-#define AD7298_TSENSE	(1 << 5) /* temperature conversion enable */
-#define AD7298_EXTREF	(1 << 2) /* external reference enable */
-#define AD7298_TAVG	(1 << 1) /* temperature sensor averaging enable */
-#define AD7298_PDD	(1 << 0) /* partial power down enable */
+#define AD7298_WRITE	BIT(15) /* write to the control register */
+#define AD7298_REPEAT	BIT(14) /* repeated conversion enable */
+#define AD7298_CH(x)	BIT(13 - (x)) /* channel select */
+#define AD7298_TSENSE	BIT(5) /* temperature conversion enable */
+#define AD7298_EXTREF	BIT(2) /* external reference enable */
+#define AD7298_TAVG	BIT(1) /* temperature sensor averaging enable */
+#define AD7298_PDD	BIT(0) /* partial power down enable */
 
-#define AD7298_MAX_CHAN		8
-#define AD7298_BITS		12
-#define AD7298_STORAGE_BITS	16
 #define AD7298_INTREF_mV	2500
 
 #define AD7298_CH_TEMP		9
-
-#define RES_MASK(bits)	((1 << (bits)) - 1)
 
 struct ad7298_state {
 	struct spi_device		*spi;
 	struct regulator		*reg;
 	unsigned			ext_ref;
+	u16						ext_vin_max[AD7298_MAX_CHAN];
 	struct spi_transfer		ring_xfer[10];
 	struct spi_transfer		scan_single_xfer[3];
 	struct spi_message		ring_msg;
@@ -63,8 +60,8 @@ struct ad7298_state {
 		.type = IIO_VOLTAGE,					\
 		.indexed = 1,						\
 		.channel = index,					\
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |		\
-		IIO_CHAN_INFO_SCALE_SHARED_BIT,				\
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),		\
+		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_SCALE),	\
 		.address = index,					\
 		.scan_index = index,					\
 		.scan_type = {						\
@@ -80,9 +77,9 @@ static const struct iio_chan_spec ad7298_channels[] = {
 		.type = IIO_TEMP,
 		.indexed = 1,
 		.channel = 0,
-		.info_mask = IIO_CHAN_INFO_RAW_SEPARATE_BIT |
-			IIO_CHAN_INFO_SCALE_SEPARATE_BIT |
-			IIO_CHAN_INFO_OFFSET_SEPARATE_BIT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW) |
+			BIT(IIO_CHAN_INFO_SCALE) |
+			BIT(IIO_CHAN_INFO_OFFSET),
 		.address = AD7298_CH_TEMP,
 		.scan_index = -1,
 		.scan_type = {
@@ -159,20 +156,14 @@ static irqreturn_t ad7298_trigger_handler(int irq, void *p)
 	struct iio_poll_func *pf = p;
 	struct iio_dev *indio_dev = pf->indio_dev;
 	struct ad7298_state *st = iio_priv(indio_dev);
-	s64 time_ns = 0;
 	int b_sent;
 
 	b_sent = spi_sync(st->spi, &st->ring_msg);
 	if (b_sent)
 		goto done;
 
-	if (indio_dev->scan_timestamp) {
-		time_ns = iio_get_time_ns();
-		memcpy((u8 *)st->rx_buf + indio_dev->scan_bytes - sizeof(s64),
-			&time_ns, sizeof(time_ns));
-	}
-
-	iio_push_to_buffers(indio_dev, (u8 *)st->rx_buf);
+	iio_push_to_buffers_with_timestamp(indio_dev, st->rx_buf,
+		iio_get_time_ns());
 
 done:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -263,13 +254,16 @@ static int ad7298_read_raw(struct iio_dev *indio_dev,
 			return ret;
 
 		if (chan->address != AD7298_CH_TEMP)
-			*val = ret & RES_MASK(AD7298_BITS);
+			*val = ret & GENMASK(chan->scan_type.realbits - 1, 0);
 
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
 		switch (chan->type) {
 		case IIO_VOLTAGE:
-			*val = ad7298_get_ref_voltage(st);
+			if (st->ext_vin_max[chan->channel])
+				*val = st->ext_vin_max[chan->channel];
+			else
+				*val = ad7298_get_ref_voltage(st);
 			*val2 = chan->scan_type.realbits;
 			return IIO_VAL_FRACTIONAL_LOG2;
 		case IIO_TEMP:
@@ -296,26 +290,32 @@ static int ad7298_probe(struct spi_device *spi)
 {
 	struct ad7298_platform_data *pdata = spi->dev.platform_data;
 	struct ad7298_state *st;
-	struct iio_dev *indio_dev = iio_device_alloc(sizeof(*st));
+	struct iio_dev *indio_dev;
 	int ret;
 
+	indio_dev = devm_iio_device_alloc(&spi->dev, sizeof(*st));
 	if (indio_dev == NULL)
 		return -ENOMEM;
 
 	st = iio_priv(indio_dev);
 
-	if (pdata && pdata->ext_ref)
-		st->ext_ref = AD7298_EXTREF;
+	if (pdata) {
+		int i;
+		if (pdata->ext_ref)
+			st->ext_ref = AD7298_EXTREF;
+
+		for (i = 0; i < AD7298_MAX_CHAN; i++)
+			st->ext_vin_max[i] = pdata->ext_vin_max[i];
+	}
 
 	if (st->ext_ref) {
-		st->reg = regulator_get(&spi->dev, "vref");
-		if (IS_ERR(st->reg)) {
-			ret = PTR_ERR(st->reg);
-			goto error_free;
-		}
+		st->reg = devm_regulator_get(&spi->dev, "vref");
+		if (IS_ERR(st->reg))
+			return PTR_ERR(st->reg);
+
 		ret = regulator_enable(st->reg);
 		if (ret)
-			goto error_put_reg;
+			return ret;
 	}
 
 	spi_set_drvdata(spi, indio_dev);
@@ -361,11 +361,6 @@ error_cleanup_ring:
 error_disable_reg:
 	if (st->ext_ref)
 		regulator_disable(st->reg);
-error_put_reg:
-	if (st->ext_ref)
-		regulator_put(st->reg);
-error_free:
-	iio_device_free(indio_dev);
 
 	return ret;
 }
@@ -377,11 +372,8 @@ static int ad7298_remove(struct spi_device *spi)
 
 	iio_device_unregister(indio_dev);
 	iio_triggered_buffer_cleanup(indio_dev);
-	if (st->ext_ref) {
+	if (st->ext_ref)
 		regulator_disable(st->reg);
-		regulator_put(st->reg);
-	}
-	iio_device_free(indio_dev);
 
 	return 0;
 }

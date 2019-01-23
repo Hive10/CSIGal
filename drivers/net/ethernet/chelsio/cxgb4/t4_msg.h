@@ -1,7 +1,7 @@
 /*
  * This file is part of the Chelsio T4 Ethernet driver for Linux.
  *
- * Copyright (c) 2003-2010 Chelsio Communications, Inc. All rights reserved.
+ * Copyright (c) 2003-2014 Chelsio Communications, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
  * licenses.  You may choose to be licensed under the terms of the GNU
@@ -74,6 +74,8 @@ enum {
 	CPL_PASS_ESTABLISH    = 0x41,
 	CPL_RX_DATA_DDP       = 0x42,
 	CPL_PASS_ACCEPT_REQ   = 0x44,
+	CPL_TRACE_PKT_T5      = 0x48,
+	CPL_RX_ISCSI_DDP      = 0x49,
 
 	CPL_RDMA_READ_REQ     = 0x60,
 
@@ -85,6 +87,7 @@ enum {
 	CPL_SGE_EGR_UPDATE    = 0xA5,
 
 	CPL_TRACE_PKT         = 0xB0,
+	CPL_ISCSI_DATA	      = 0xB2,
 
 	CPL_FW4_MSG           = 0xC0,
 	CPL_FW4_PLD           = 0xC1,
@@ -115,6 +118,7 @@ enum CPL_error {
 	CPL_ERR_KEEPALIVE_TIMEDOUT = 34,
 	CPL_ERR_RTX_NEG_ADVICE     = 35,
 	CPL_ERR_PERSIST_NEG_ADVICE = 36,
+	CPL_ERR_KEEPALV_NEG_ADVICE = 37,
 	CPL_ERR_ABORT_FAILED       = 42,
 	CPL_ERR_IWARP_FLM          = 50,
 };
@@ -157,6 +161,7 @@ union opcode_tid {
 };
 
 #define CPL_OPCODE(x) ((x) << 24)
+#define G_CPL_OPCODE(x) (((x) >> 24) & 0xFF)
 #define MK_OPCODE_TID(opcode, tid) (CPL_OPCODE(opcode) | (tid))
 #define OPCODE_TID(cmd) ((cmd)->ot.opcode_tid)
 #define GET_TID(cmd) (ntohl(OPCODE_TID(cmd)) & 0xFFFFFF)
@@ -200,16 +205,62 @@ struct work_request_hdr {
 #define WR_HDR struct work_request_hdr wr
 
 /* option 0 fields */
-#define S_MSS_IDX    60
-#define M_MSS_IDX    0xF
-#define V_MSS_IDX(x) ((__u64)(x) << S_MSS_IDX)
-#define G_MSS_IDX(x) (((x) >> S_MSS_IDX) & M_MSS_IDX)
+#define TX_CHAN_S    2
+#define TX_CHAN_V(x) ((x) << TX_CHAN_S)
+
+#define ULP_MODE_S    8
+#define ULP_MODE_V(x) ((x) << ULP_MODE_S)
+
+#define RCV_BUFSIZ_S    12
+#define RCV_BUFSIZ_M    0x3FFU
+#define RCV_BUFSIZ_V(x) ((x) << RCV_BUFSIZ_S)
+
+#define SMAC_SEL_S    28
+#define SMAC_SEL_V(x) ((__u64)(x) << SMAC_SEL_S)
+
+#define L2T_IDX_S    36
+#define L2T_IDX_V(x) ((__u64)(x) << L2T_IDX_S)
+
+#define WND_SCALE_S    50
+#define WND_SCALE_V(x) ((__u64)(x) << WND_SCALE_S)
+
+#define KEEP_ALIVE_S    54
+#define KEEP_ALIVE_V(x) ((__u64)(x) << KEEP_ALIVE_S)
+#define KEEP_ALIVE_F    KEEP_ALIVE_V(1ULL)
+
+#define MSS_IDX_S    60
+#define MSS_IDX_M    0xF
+#define MSS_IDX_V(x) ((__u64)(x) << MSS_IDX_S)
+#define MSS_IDX_G(x) (((x) >> MSS_IDX_S) & MSS_IDX_M)
 
 /* option 2 fields */
-#define S_RSS_QUEUE    0
-#define M_RSS_QUEUE    0x3FF
-#define V_RSS_QUEUE(x) ((x) << S_RSS_QUEUE)
-#define G_RSS_QUEUE(x) (((x) >> S_RSS_QUEUE) & M_RSS_QUEUE)
+#define RSS_QUEUE_S    0
+#define RSS_QUEUE_M    0x3FF
+#define RSS_QUEUE_V(x) ((x) << RSS_QUEUE_S)
+#define RSS_QUEUE_G(x) (((x) >> RSS_QUEUE_S) & RSS_QUEUE_M)
+
+#define RSS_QUEUE_VALID_S    10
+#define RSS_QUEUE_VALID_V(x) ((x) << RSS_QUEUE_VALID_S)
+#define RSS_QUEUE_VALID_F    RSS_QUEUE_VALID_V(1U)
+
+#define RX_FC_DISABLE_S    20
+#define RX_FC_DISABLE_V(x) ((x) << RX_FC_DISABLE_S)
+#define RX_FC_DISABLE_F    RX_FC_DISABLE_V(1U)
+
+#define RX_FC_VALID_S    22
+#define RX_FC_VALID_V(x) ((x) << RX_FC_VALID_S)
+#define RX_FC_VALID_F    RX_FC_VALID_V(1U)
+
+#define RX_CHANNEL_S    26
+#define RX_CHANNEL_V(x) ((x) << RX_CHANNEL_S)
+
+#define WND_SCALE_EN_S    28
+#define WND_SCALE_EN_V(x) ((x) << WND_SCALE_EN_S)
+#define WND_SCALE_EN_F    WND_SCALE_EN_V(1U)
+
+#define T5_OPT_2_VALID_S    31
+#define T5_OPT_2_VALID_V(x) ((x) << T5_OPT_2_VALID_S)
+#define T5_OPT_2_VALID_F    T5_OPT_2_VALID_V(1U)
 
 struct cpl_pass_open_req {
 	WR_HDR;
@@ -219,19 +270,11 @@ struct cpl_pass_open_req {
 	__be32 local_ip;
 	__be32 peer_ip;
 	__be64 opt0;
-#define TX_CHAN(x)    ((x) << 2)
 #define NO_CONG(x)    ((x) << 4)
 #define DELACK(x)     ((x) << 5)
-#define ULP_MODE(x)   ((x) << 8)
-#define RCV_BUFSIZ(x) ((x) << 12)
 #define DSCP(x)       ((x) << 22)
-#define SMAC_SEL(x)   ((u64)(x) << 28)
-#define L2T_IDX(x)    ((u64)(x) << 36)
 #define TCAM_BYPASS(x) ((u64)(x) << 48)
 #define NAGLE(x)      ((u64)(x) << 49)
-#define WND_SCALE(x)  ((u64)(x) << 50)
-#define KEEP_ALIVE(x) ((u64)(x) << 54)
-#define MSS_IDX(x)    ((u64)(x) << 60)
 	__be64 opt1;
 #define SYN_RSS_ENABLE   (1 << 0)
 #define SYN_RSS_QUEUE(x) ((x) << 2)
@@ -261,18 +304,23 @@ struct cpl_pass_accept_rpl {
 	WR_HDR;
 	union opcode_tid ot;
 	__be32 opt2;
-#define RSS_QUEUE(x)         ((x) << 0)
-#define RSS_QUEUE_VALID      (1 << 10)
 #define RX_COALESCE_VALID(x) ((x) << 11)
 #define RX_COALESCE(x)       ((x) << 12)
 #define PACE(x)	      ((x) << 16)
 #define TX_QUEUE(x)          ((x) << 23)
-#define RX_CHANNEL(x)        ((x) << 26)
 #define CCTRL_ECN(x)         ((x) << 27)
-#define WND_SCALE_EN(x)      ((x) << 28)
 #define TSTAMPS_EN(x)        ((x) << 29)
 #define SACK_EN(x)           ((x) << 30)
 	__be64 opt0;
+};
+
+struct cpl_t5_pass_accept_rpl {
+	WR_HDR;
+	union opcode_tid ot;
+	__be32 opt2;
+	__be64 opt0;
+	__be32 iss;
+	__be32 rsvd;
 };
 
 struct cpl_act_open_req {
@@ -287,6 +335,23 @@ struct cpl_act_open_req {
 	__be32 opt2;
 };
 
+#define FILTER_TUPLE_S  24
+#define FILTER_TUPLE_M  0xFFFFFFFFFF
+#define FILTER_TUPLE_V(x) ((x) << FILTER_TUPLE_S)
+#define FILTER_TUPLE_G(x) (((x) >> FILTER_TUPLE_S) & FILTER_TUPLE_M)
+struct cpl_t5_act_open_req {
+	WR_HDR;
+	union opcode_tid ot;
+	__be16 local_port;
+	__be16 peer_port;
+	__be32 local_ip;
+	__be32 peer_ip;
+	__be64 opt0;
+	__be32 rsvd;
+	__be32 opt2;
+	__be64 params;
+};
+
 struct cpl_act_open_req6 {
 	WR_HDR;
 	union opcode_tid ot;
@@ -299,6 +364,21 @@ struct cpl_act_open_req6 {
 	__be64 opt0;
 	__be32 params;
 	__be32 opt2;
+};
+
+struct cpl_t5_act_open_req6 {
+	WR_HDR;
+	union opcode_tid ot;
+	__be16 local_port;
+	__be16 peer_port;
+	__be64 local_ip_hi;
+	__be64 local_ip_lo;
+	__be64 peer_ip_hi;
+	__be64 peer_ip_lo;
+	__be64 opt0;
+	__be32 rsvd;
+	__be32 opt2;
+	__be64 params;
 };
 
 struct cpl_act_open_rpl {
@@ -386,7 +466,7 @@ struct cpl_close_listsvr_req {
 	WR_HDR;
 	union opcode_tid ot;
 	__be16 reply_ctrl;
-#define LISTSVR_IPV6 (1 << 14)
+#define LISTSVR_IPV6(x) ((x) << 14)
 	__be16 rsvd;
 };
 
@@ -477,6 +557,7 @@ struct cpl_tx_pkt_lso_core {
 #define LSO_LAST_SLICE    (1 << 22)
 #define LSO_FIRST_SLICE   (1 << 23)
 #define LSO_OPCODE(x)     ((x) << 24)
+#define LSO_T5_XFER_SIZE(x) ((x) << 0)
 	__be16 ipid_ofst;
 	__be16 mss;
 	__be32 seqno_offset;
@@ -528,9 +609,15 @@ struct cpl_rx_data_ack {
 	WR_HDR;
 	union opcode_tid ot;
 	__be32 credit_dack;
-#define RX_CREDITS(x)   ((x) << 0)
-#define RX_FORCE_ACK(x) ((x) << 28)
 };
+
+/* cpl_rx_data_ack.ack_seq fields */
+#define RX_CREDITS_S    0
+#define RX_CREDITS_V(x) ((x) << RX_CREDITS_S)
+
+#define RX_FORCE_ACK_S    28
+#define RX_FORCE_ACK_V(x) ((x) << RX_FORCE_ACK_S)
+#define RX_FORCE_ACK_F    RX_FORCE_ACK_V(1U)
 
 struct cpl_rx_pkt {
 	struct rss_header rsshdr;
@@ -565,6 +652,11 @@ struct cpl_rx_pkt {
 #define M_RX_ETHHDR_LEN    0x1F
 #define V_RX_ETHHDR_LEN(x) ((x) << S_RX_ETHHDR_LEN)
 #define G_RX_ETHHDR_LEN(x) (((x) >> S_RX_ETHHDR_LEN) & M_RX_ETHHDR_LEN)
+
+#define S_RX_T5_ETHHDR_LEN    0
+#define M_RX_T5_ETHHDR_LEN    0x3F
+#define V_RX_T5_ETHHDR_LEN(x) ((x) << S_RX_T5_ETHHDR_LEN)
+#define G_RX_T5_ETHHDR_LEN(x) (((x) >> S_RX_T5_ETHHDR_LEN) & M_RX_T5_ETHHDR_LEN)
 
 #define S_RX_MACIDX    8
 #define M_RX_MACIDX    0x1FF
@@ -612,6 +704,28 @@ struct cpl_trace_pkt {
 	__be64 tstamp;
 };
 
+struct cpl_t5_trace_pkt {
+	__u8 opcode;
+	__u8 intf;
+#if defined(__LITTLE_ENDIAN_BITFIELD)
+	__u8 runt:4;
+	__u8 filter_hit:4;
+	__u8:6;
+	__u8 err:1;
+	__u8 trunc:1;
+#else
+	__u8 filter_hit:4;
+	__u8 runt:4;
+	__u8 trunc:1;
+	__u8 err:1;
+	__u8:6;
+#endif
+	__be16 rsvd;
+	__be16 len;
+	__be64 tstamp;
+	__be64 rsvd1;
+};
+
 struct cpl_l2t_write_req {
 	WR_HDR;
 	union opcode_tid ot;
@@ -641,6 +755,15 @@ struct cpl_sge_egr_update {
 #define EGR_QID(x) ((x) & 0x1FFFF)
 	__be16 cidx;
 	__be16 pidx;
+};
+
+/* cpl_fw*.type values */
+enum {
+	FW_TYPE_CMD_RPL = 0,
+	FW_TYPE_WR_RPL = 1,
+	FW_TYPE_CQE = 2,
+	FW_TYPE_OFLD_CONNECTION_WR_RPL = 3,
+	FW_TYPE_RSSCPL = 4,
 };
 
 struct cpl_fw4_pld {
@@ -692,6 +815,7 @@ enum {
 	FW6_TYPE_WR_RPL = 1,
 	FW6_TYPE_CQE = 2,
 	FW6_TYPE_OFLD_CONNECTION_WR_RPL = 3,
+	FW6_TYPE_RSSCPL = FW_TYPE_RSSCPL,
 };
 
 struct cpl_fw6_msg_ofld_connection_wr_rpl {
@@ -715,6 +839,9 @@ enum {
 	ULP_TX_SC_ISGL = 0x83
 };
 
+#define ULPTX_CMD_S    24
+#define ULPTX_CMD_V(x) ((x) << ULPTX_CMD_S)
+
 struct ulptx_sge_pair {
 	__be32 len[2];
 	__be64 addr[2];
@@ -722,7 +849,6 @@ struct ulptx_sge_pair {
 
 struct ulptx_sgl {
 	__be32 cmd_nsge;
-#define ULPTX_CMD(x) ((x) << 24)
 #define ULPTX_NSGE(x) ((x) << 0)
 #define ULPTX_MORE (1U << 23)
 	__be32 len0;
@@ -733,13 +859,35 @@ struct ulptx_sgl {
 struct ulp_mem_io {
 	WR_HDR;
 	__be32 cmd;
-#define ULP_MEMIO_ORDER(x) ((x) << 23)
 	__be32 len16;             /* command length */
 	__be32 dlen;              /* data length in 32-byte units */
-#define ULP_MEMIO_DATA_LEN(x) ((x) << 0)
 	__be32 lock_addr;
-#define ULP_MEMIO_ADDR(x) ((x) << 0)
 #define ULP_MEMIO_LOCK(x) ((x) << 31)
 };
+
+/* additional ulp_mem_io.cmd fields */
+#define ULP_MEMIO_ORDER_S    23
+#define ULP_MEMIO_ORDER_V(x) ((x) << ULP_MEMIO_ORDER_S)
+#define ULP_MEMIO_ORDER_F    ULP_MEMIO_ORDER_V(1U)
+
+#define T5_ULP_MEMIO_IMM_S    23
+#define T5_ULP_MEMIO_IMM_V(x) ((x) << T5_ULP_MEMIO_IMM_S)
+#define T5_ULP_MEMIO_IMM_F    T5_ULP_MEMIO_IMM_V(1U)
+
+#define S_T5_ULP_MEMIO_IMM    23
+#define V_T5_ULP_MEMIO_IMM(x) ((x) << S_T5_ULP_MEMIO_IMM)
+#define F_T5_ULP_MEMIO_IMM    V_T5_ULP_MEMIO_IMM(1U)
+
+#define S_T5_ULP_MEMIO_ORDER    22
+#define V_T5_ULP_MEMIO_ORDER(x) ((x) << S_T5_ULP_MEMIO_ORDER)
+#define F_T5_ULP_MEMIO_ORDER    V_T5_ULP_MEMIO_ORDER(1U)
+
+/* ulp_mem_io.lock_addr fields */
+#define ULP_MEMIO_ADDR_S    0
+#define ULP_MEMIO_ADDR_V(x) ((x) << ULP_MEMIO_ADDR_S)
+
+/* ulp_mem_io.dlen fields */
+#define ULP_MEMIO_DATA_LEN_S    0
+#define ULP_MEMIO_DATA_LEN_V(x) ((x) << ULP_MEMIO_DATA_LEN_S)
 
 #endif  /* __T4_MSG_H */

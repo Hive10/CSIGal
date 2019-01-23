@@ -15,7 +15,6 @@
 #include <linux/delay.h>
 #include <linux/string.h>
 #include <linux/init.h>
-#include <linux/bootmem.h>
 #include <linux/irq.h>
 #include <linux/of_pci.h>
 
@@ -698,7 +697,7 @@ static void __init fixup_nec_usb2(void)
 {
 	struct device_node *nec;
 
-	for (nec = NULL; (nec = of_find_node_by_name(nec, "usb")) != NULL;) {
+	for_each_node_by_name(nec, "usb") {
 		struct pci_controller *hose;
 		u32 data;
 		const u32 *prop;
@@ -824,6 +823,7 @@ static void __init parse_region_decode(struct pci_controller *hose,
 			hose->mem_resources[cur].name = hose->dn->full_name;
 			hose->mem_resources[cur].start = base;
 			hose->mem_resources[cur].end = end;
+			hose->mem_offset[cur] = 0;
 			DBG("  %d: 0x%08lx-0x%08lx\n", cur, base, end);
 		} else {
 			DBG("   :           -0x%08lx\n", end);
@@ -866,7 +866,6 @@ static void __init setup_u3_ht(struct pci_controller* hose)
 	hose->io_resource.start = 0;
 	hose->io_resource.end = 0x003fffff;
 	hose->io_resource.flags = IORESOURCE_IO;
-	hose->pci_mem_offset = 0;
 	hose->first_busno = 0;
 	hose->last_busno = 0xef;
 

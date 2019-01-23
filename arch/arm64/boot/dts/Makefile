@@ -1,6 +1,6 @@
-targets += dtbs
-targets += $(dtb-y)
+dts-dirs += amd
+dts-dirs += apm
+dts-dirs += arm
+dts-dirs += cavium
 
-dtbs: $(addprefix $(obj)/, $(dtb-y))
-
-clean-files := *.dtb
+subdir-y	:= $(dts-dirs)

@@ -246,6 +246,7 @@ static int pccard_init(struct pcmcia_socket *sock)
 	socket = &vrc4171_sockets[slot];
 	socket->csc_irq = search_nonuse_irq();
 	socket->io_irq = search_nonuse_irq();
+	spin_lock_init(&socket->lock);
 
 	return 0;
 }
@@ -708,7 +709,6 @@ __setup("vrc4171_card=", vrc4171_card_setup);
 static struct platform_driver vrc4171_card_driver = {
 	.driver = {
 		.name		= vrc4171_card_name,
-		.owner		= THIS_MODULE,
 	},
 };
 

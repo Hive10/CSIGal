@@ -18,13 +18,11 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  * ----------------------------------------------------------------------------
  *
  */
+
+#include <linux/irqreturn.h>
 
 
 #define DW_IC_CON_MASTER		0x1
@@ -34,6 +32,16 @@
 #define DW_IC_CON_RESTART_EN		0x20
 #define DW_IC_CON_SLAVE_DISABLE		0x40
 
+struct dw_pci_controller {
+	u32 bus_num;
+	u32 bus_cfg;
+	u32 tx_fifo_depth;
+	u32 rx_fifo_depth;
+	u32 clk_khz;
+	u32 functionality;
+	struct dw_scl_sda_cfg *scl_sda_cfg;
+	u8  explicit_stop;
+};
 
 /**
  * struct dw_i2c_dev - private i2c-designware data
@@ -60,6 +68,15 @@
  * @adapter: i2c subsystem adapter node
  * @tx_fifo_depth: depth of the hardware tx fifo
  * @rx_fifo_depth: depth of the hardware rx fifo
+ * @rx_outstanding: current master-rx elements in tx fifo
+ * @ss_hcnt: standard speed HCNT value
+ * @ss_lcnt: standard speed LCNT value
+ * @fs_hcnt: fast speed HCNT value
+ * @fs_lcnt: fast speed LCNT value
+ *
+ * HCNT and LCNT parameters can be used if the platform knows more accurate
+ * values than the one computed based only on the input clock frequency.
+ * Leave them to be %0 if not used.
  */
 struct dw_i2c_dev {
 	struct device		*dev;
@@ -88,6 +105,15 @@ struct dw_i2c_dev {
 	u32			master_cfg;
 	unsigned int		tx_fifo_depth;
 	unsigned int		rx_fifo_depth;
+	int			rx_outstanding;
+	u32			sda_hold_time;
+	u32			sda_falling_time;
+	u32			scl_falling_time;
+	u16			ss_hcnt;
+	u16			ss_lcnt;
+	u16			fs_hcnt;
+	u16			fs_lcnt;
+	u8                      explicit_stop;
 };
 
 #define ACCESS_SWAP		0x00000001

@@ -28,6 +28,7 @@
 #include <linux/types.h>
 #include <linux/virtio_ids.h>
 #include <linux/virtio_config.h>
+#include <linux/virtio_types.h>
 #include <linux/if_ether.h>
 
 /* The feature bitmap for virtio net */
@@ -53,13 +54,14 @@
 					 * network */
 #define VIRTIO_NET_F_MQ	22	/* Device supports Receive Flow
 					 * Steering */
+#define VIRTIO_NET_F_CTRL_MAC_ADDR 23	/* Set MAC address */
 
 #define VIRTIO_NET_S_LINK_UP	1	/* Link is up */
 #define VIRTIO_NET_S_ANNOUNCE	2	/* Announcement is needed */
 
 struct virtio_net_config {
 	/* The config defining mac address (if VIRTIO_NET_F_MAC) */
-	__u8 mac[6];
+	__u8 mac[ETH_ALEN];
 	/* See VIRTIO_NET_F_STATUS and VIRTIO_NET_S_* above */
 	__u16 status;
 	/* Maximum number of each of transmit and receive queues;
@@ -69,7 +71,9 @@ struct virtio_net_config {
 	__u16 max_virtqueue_pairs;
 } __attribute__((packed));
 
-/* This is the first element of the scatter-gather list.  If you don't
+/* This header comes first in the scatter-gather list.
+ * If VIRTIO_F_ANY_LAYOUT is not negotiated, it must
+ * be the first element of the scatter-gather list.  If you don't
  * specify GSO or CSUM features, you can simply ignore the header. */
 struct virtio_net_hdr {
 #define VIRTIO_NET_HDR_F_NEEDS_CSUM	1	// Use csum_start, csum_offset
@@ -81,17 +85,17 @@ struct virtio_net_hdr {
 #define VIRTIO_NET_HDR_GSO_TCPV6	4	// GSO frame, IPv6 TCP
 #define VIRTIO_NET_HDR_GSO_ECN		0x80	// TCP has ECN set
 	__u8 gso_type;
-	__u16 hdr_len;		/* Ethernet + IP + tcp/udp hdrs */
-	__u16 gso_size;		/* Bytes to append to hdr_len per frame */
-	__u16 csum_start;	/* Position to start checksumming from */
-	__u16 csum_offset;	/* Offset after that to place checksum */
+	__virtio16 hdr_len;		/* Ethernet + IP + tcp/udp hdrs */
+	__virtio16 gso_size;		/* Bytes to append to hdr_len per frame */
+	__virtio16 csum_start;	/* Position to start checksumming from */
+	__virtio16 csum_offset;	/* Offset after that to place checksum */
 };
 
 /* This is the version of the header to use when the MRG_RXBUF
  * feature has been negotiated. */
 struct virtio_net_hdr_mrg_rxbuf {
 	struct virtio_net_hdr hdr;
-	__u16 num_buffers;	/* Number of merged rx buffers */
+	__virtio16 num_buffers;	/* Number of merged rx buffers */
 };
 
 /*
@@ -127,7 +131,7 @@ typedef __u8 virtio_net_ctrl_ack;
  #define VIRTIO_NET_CTRL_RX_NOBCAST      5
 
 /*
- * Control the MAC filter table.
+ * Control the MAC
  *
  * The MAC filter table is managed by the hypervisor, the guest should
  * assume the size is infinite.  Filtering should be considered
@@ -140,14 +144,19 @@ typedef __u8 virtio_net_ctrl_ack;
  * first sg list contains unicast addresses, the second is for multicast.
  * This functionality is present if the VIRTIO_NET_F_CTRL_RX feature
  * is available.
+ *
+ * The ADDR_SET command requests one out scatterlist, it contains a
+ * 6 bytes MAC address. This functionality is present if the
+ * VIRTIO_NET_F_CTRL_MAC_ADDR feature is available.
  */
 struct virtio_net_ctrl_mac {
-	__u32 entries;
+	__virtio32 entries;
 	__u8 macs[][ETH_ALEN];
 } __attribute__((packed));
 
 #define VIRTIO_NET_CTRL_MAC    1
  #define VIRTIO_NET_CTRL_MAC_TABLE_SET        0
+ #define VIRTIO_NET_CTRL_MAC_ADDR_SET         1
 
 /*
  * Control VLAN filtering
@@ -185,7 +194,7 @@ struct virtio_net_ctrl_mac {
  * specified.
  */
 struct virtio_net_ctrl_mq {
-	u16 virtqueue_pairs;
+	__virtio16 virtqueue_pairs;
 };
 
 #define VIRTIO_NET_CTRL_MQ   4

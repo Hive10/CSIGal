@@ -24,6 +24,7 @@
 #include <linux/devpts_fs.h>
 #include <linux/slab.h>
 #include <linux/mutex.h>
+#include <linux/poll.h>
 
 
 #ifdef CONFIG_UNIX98_PTYS
@@ -38,16 +39,21 @@ static void pty_close(struct tty_struct *tty, struct file *filp)
 	if (tty->driver->subtype == PTY_TYPE_MASTER)
 		WARN_ON(tty->count > 1);
 	else {
+		if (test_bit(TTY_IO_ERROR, &tty->flags))
+			return;
 		if (tty->count > 2)
 			return;
 	}
+	set_bit(TTY_IO_ERROR, &tty->flags);
 	wake_up_interruptible(&tty->read_wait);
 	wake_up_interruptible(&tty->write_wait);
+	spin_lock_irq(&tty->ctrl_lock);
 	tty->packet = 0;
+	spin_unlock_irq(&tty->ctrl_lock);
 	/* Review - krefs on tty_link ?? */
 	if (!tty->link)
 		return;
-	tty->link->packet = 0;
+	tty_flush_to_ldisc(tty->link);
 	set_bit(TTY_OTHER_CLOSED, &tty->link->flags);
 	wake_up_interruptible(&tty->link->read_wait);
 	wake_up_interruptible(&tty->link->write_wait);
@@ -55,14 +61,13 @@ static void pty_close(struct tty_struct *tty, struct file *filp)
 		set_bit(TTY_OTHER_CLOSED, &tty->flags);
 #ifdef CONFIG_UNIX98_PTYS
 		if (tty->driver == ptm_driver) {
-		        mutex_lock(&devpts_mutex);
-			devpts_pty_kill(tty->link->driver_data);
-		        mutex_unlock(&devpts_mutex);
+			mutex_lock(&devpts_mutex);
+			if (tty->link->driver_data)
+				devpts_pty_kill(tty->link->driver_data);
+			mutex_unlock(&devpts_mutex);
 		}
 #endif
-		tty_unlock(tty);
 		tty_vhangup(tty->link);
-		tty_lock(tty);
 	}
 }
 
@@ -86,17 +91,13 @@ static void pty_unthrottle(struct tty_struct *tty)
  *	pty_space	-	report space left for writing
  *	@to: tty we are writing into
  *
- *	The tty buffers allow 64K but we sneak a peak and clip at 8K this
- *	allows a lot of overspill room for echo and other fun messes to
- *	be handled properly
+ *	Limit the buffer space used by ptys to 8k.
  */
 
 static int pty_space(struct tty_struct *to)
 {
-	int n = 8192 - to->port->buf.memory_used;
-	if (n < 0)
-		return 0;
-	return n;
+	int n = tty_buffer_space_avail(to->port);
+	return min(n, 8192);
 }
 
 /**
@@ -120,12 +121,10 @@ static int pty_write(struct tty_struct *tty, const unsigned char *buf, int c)
 
 	if (c > 0) {
 		/* Stuff the data into the input queue of the other end */
-		c = tty_insert_flip_string(to, buf, c);
+		c = tty_insert_flip_string(to->port, buf, c);
 		/* And shovel */
-		if (c) {
-			tty_flip_buffer_push(to);
-			tty_wakeup(tty);
-		}
+		if (c)
+			tty_flip_buffer_push(to->port);
 	}
 	return c;
 }
@@ -180,21 +179,21 @@ static int pty_get_lock(struct tty_struct *tty, int __user *arg)
 /* Set the packet mode on a pty */
 static int pty_set_pktmode(struct tty_struct *tty, int __user *arg)
 {
-	unsigned long flags;
 	int pktmode;
 
 	if (get_user(pktmode, arg))
 		return -EFAULT;
 
-	spin_lock_irqsave(&tty->ctrl_lock, flags);
+	spin_lock_irq(&tty->ctrl_lock);
 	if (pktmode) {
 		if (!tty->packet) {
-			tty->packet = 1;
 			tty->link->ctrl_status = 0;
+			smp_mb();
+			tty->packet = 1;
 		}
 	} else
 		tty->packet = 0;
-	spin_unlock_irqrestore(&tty->ctrl_lock, flags);
+	spin_unlock_irq(&tty->ctrl_lock);
 
 	return 0;
 }
@@ -209,15 +208,15 @@ static int pty_get_pktmode(struct tty_struct *tty, int __user *arg)
 /* Send a signal to the slave */
 static int pty_signal(struct tty_struct *tty, int sig)
 {
-	unsigned long flags;
 	struct pid *pgrp;
 
-	if (tty->link) {
-		spin_lock_irqsave(&tty->link->ctrl_lock, flags);
-		pgrp = get_pid(tty->link->pgrp);
-		spin_unlock_irqrestore(&tty->link->ctrl_lock, flags);
+	if (sig != SIGINT && sig != SIGQUIT && sig != SIGTSTP)
+		return -EINVAL;
 
-		kill_pgrp(pgrp, sig, 1);
+	if (tty->link) {
+		pgrp = tty_get_pgrp(tty->link);
+		if (pgrp)
+			kill_pgrp(pgrp, sig, 1);
 		put_pid(pgrp);
 	}
 	return 0;
@@ -226,44 +225,69 @@ static int pty_signal(struct tty_struct *tty, int sig)
 static void pty_flush_buffer(struct tty_struct *tty)
 {
 	struct tty_struct *to = tty->link;
-	unsigned long flags;
 
 	if (!to)
 		return;
 	/* tty_buffer_flush(to); FIXME */
 	if (to->packet) {
-		spin_lock_irqsave(&tty->ctrl_lock, flags);
+		spin_lock_irq(&tty->ctrl_lock);
 		tty->ctrl_status |= TIOCPKT_FLUSHWRITE;
 		wake_up_interruptible(&to->read_wait);
-		spin_unlock_irqrestore(&tty->ctrl_lock, flags);
+		spin_unlock_irq(&tty->ctrl_lock);
 	}
 }
 
 static int pty_open(struct tty_struct *tty, struct file *filp)
 {
-	int	retval = -ENODEV;
-
 	if (!tty || !tty->link)
-		goto out;
+		return -ENODEV;
 
-	retval = -EIO;
 	if (test_bit(TTY_OTHER_CLOSED, &tty->flags))
 		goto out;
 	if (test_bit(TTY_PTY_LOCK, &tty->link->flags))
 		goto out;
-	if (tty->link->count != 1)
+	if (tty->driver->subtype == PTY_TYPE_SLAVE && tty->link->count != 1)
 		goto out;
 
+	clear_bit(TTY_IO_ERROR, &tty->flags);
 	clear_bit(TTY_OTHER_CLOSED, &tty->link->flags);
 	set_bit(TTY_THROTTLED, &tty->flags);
-	retval = 0;
+	return 0;
+
 out:
-	return retval;
+	set_bit(TTY_IO_ERROR, &tty->flags);
+	return -EIO;
 }
 
 static void pty_set_termios(struct tty_struct *tty,
 					struct ktermios *old_termios)
 {
+	/* See if packet mode change of state. */
+	if (tty->link && tty->link->packet) {
+		int extproc = (old_termios->c_lflag & EXTPROC) |
+				(tty->termios.c_lflag & EXTPROC);
+		int old_flow = ((old_termios->c_iflag & IXON) &&
+				(old_termios->c_cc[VSTOP] == '\023') &&
+				(old_termios->c_cc[VSTART] == '\021'));
+		int new_flow = (I_IXON(tty) &&
+				STOP_CHAR(tty) == '\023' &&
+				START_CHAR(tty) == '\021');
+		if ((old_flow != new_flow) || extproc) {
+			spin_lock_irq(&tty->ctrl_lock);
+			if (old_flow != new_flow) {
+				tty->ctrl_status &= ~(TIOCPKT_DOSTOP | TIOCPKT_NOSTOP);
+				if (new_flow)
+					tty->ctrl_status |= TIOCPKT_DOSTOP;
+				else
+					tty->ctrl_status |= TIOCPKT_NOSTOP;
+			}
+			if (extproc)
+				tty->ctrl_status |= TIOCPKT_IOCTL;
+			spin_unlock_irq(&tty->ctrl_lock);
+			wake_up_interruptible(&tty->link->read_wait);
+		}
+	}
+
 	tty->termios.c_cflag &= ~(CSIZE | PARENB);
 	tty->termios.c_cflag |= (CS8 | CREAD);
 }
@@ -280,25 +304,16 @@ static void pty_set_termios(struct tty_struct *tty,
 static int pty_resize(struct tty_struct *tty,  struct winsize *ws)
 {
 	struct pid *pgrp, *rpgrp;
-	unsigned long flags;
 	struct tty_struct *pty = tty->link;
 
 	/* For a PTY we need to lock the tty side */
-	mutex_lock(&tty->termios_mutex);
+	mutex_lock(&tty->winsize_mutex);
 	if (!memcmp(ws, &tty->winsize, sizeof(*ws)))
 		goto done;
 
-	/* Get the PID values and reference them so we can
-	   avoid holding the tty ctrl lock while sending signals.
-	   We need to lock these individually however. */
-
-	spin_lock_irqsave(&tty->ctrl_lock, flags);
-	pgrp = get_pid(tty->pgrp);
-	spin_unlock_irqrestore(&tty->ctrl_lock, flags);
-
-	spin_lock_irqsave(&pty->ctrl_lock, flags);
-	rpgrp = get_pid(pty->pgrp);
-	spin_unlock_irqrestore(&pty->ctrl_lock, flags);
+	/* Signal the foreground process group of both ptys */
+	pgrp = tty_get_pgrp(tty);
+	rpgrp = tty_get_pgrp(pty);
 
 	if (pgrp)
 		kill_pgrp(pgrp, SIGWINCH, 1);
@@ -311,15 +326,51 @@ static int pty_resize(struct tty_struct *tty,  struct winsize *ws)
 	tty->winsize = *ws;
 	pty->winsize = *ws;	/* Never used so will go away soon */
 done:
-	mutex_unlock(&tty->termios_mutex);
+	mutex_unlock(&tty->winsize_mutex);
 	return 0;
+}
+
+/**
+ *	pty_start - start() handler
+ *	pty_stop  - stop() handler
+ *	@tty: tty being flow-controlled
+ *
+ *	Propagates the TIOCPKT status to the master pty.
+ *
+ *	NB: only the master pty can be in packet mode so only the slave
+ *	    needs start()/stop() handlers
+ */
+static void pty_start(struct tty_struct *tty)
+{
+	unsigned long flags;
+
+	if (tty->link && tty->link->packet) {
+		spin_lock_irqsave(&tty->ctrl_lock, flags);
+		tty->ctrl_status &= ~TIOCPKT_STOP;
+		tty->ctrl_status |= TIOCPKT_START;
+		spin_unlock_irqrestore(&tty->ctrl_lock, flags);
+		wake_up_interruptible_poll(&tty->link->read_wait, POLLIN);
+	}
+}
+
+static void pty_stop(struct tty_struct *tty)
+{
+	unsigned long flags;
+
+	if (tty->link && tty->link->packet) {
+		spin_lock_irqsave(&tty->ctrl_lock, flags);
+		tty->ctrl_status &= ~TIOCPKT_START;
+		tty->ctrl_status |= TIOCPKT_STOP;
+		spin_unlock_irqrestore(&tty->ctrl_lock, flags);
+		wake_up_interruptible_poll(&tty->link->read_wait, POLLIN);
+	}
 }
 
 /**
  *	pty_common_install		-	set up the pty pair
  *	@driver: the pty driver
  *	@tty: the tty being instantiated
- *	@bool: legacy, true if this is BSD style
+ *	@legacy: true if this is BSD style
  *
  *	Perform the initial set up for the tty/pty pair. Called from the
  *	tty layer when the port is first opened.
@@ -334,18 +385,23 @@ static int pty_common_install(struct tty_driver *driver, struct tty_struct *tty,
 	int idx = tty->index;
 	int retval = -ENOMEM;
 
-	o_tty = alloc_tty_struct();
-	if (!o_tty)
-		goto err;
+	/* Opening the slave first has always returned -EIO */
+	if (driver->subtype != PTY_TYPE_MASTER)
+		return -EIO;
+
 	ports[0] = kmalloc(sizeof **ports, GFP_KERNEL);
 	ports[1] = kmalloc(sizeof **ports, GFP_KERNEL);
 	if (!ports[0] || !ports[1])
-		goto err_free_tty;
+		goto err;
 	if (!try_module_get(driver->other->owner)) {
 		/* This cannot in fact currently happen */
-		goto err_free_tty;
+		goto err;
 	}
-	initialize_tty_struct(o_tty, driver->other, idx);
+	o_tty = alloc_tty_struct(driver->other, idx);
+	if (!o_tty)
+		goto err_put_module;
+
+	tty_set_lock_subclass(o_tty);
 
 	if (legacy) {
 		/* We always use new tty termios data so we can do this
@@ -371,8 +427,6 @@ static int pty_common_install(struct tty_driver *driver, struct tty_struct *tty,
 	 * Everything allocated ... set up the o_tty structure.
 	 */
 	tty_driver_kref_get(driver->other);
-	if (driver->subtype == PTY_TYPE_MASTER)
-		o_tty->count++;
 	/* Establish the links in both directions */
 	tty->link   = o_tty;
 	o_tty->link = tty;
@@ -384,30 +438,24 @@ static int pty_common_install(struct tty_driver *driver, struct tty_struct *tty,
 
 	tty_driver_kref_get(driver);
 	tty->count++;
+	o_tty->count++;
 	return 0;
 err_free_termios:
 	if (legacy)
 		tty_free_termios(tty);
 err_deinit_tty:
 	deinitialize_tty_struct(o_tty);
-	module_put(o_tty->driver->owner);
-err_free_tty:
+	free_tty_struct(o_tty);
+err_put_module:
+	module_put(driver->other->owner);
+err:
 	kfree(ports[0]);
 	kfree(ports[1]);
-	free_tty_struct(o_tty);
-err:
 	return retval;
-}
-
-/* this is called once with whichever end is closed last */
-static void pty_unix98_shutdown(struct tty_struct *tty)
-{
-	devpts_kill_index(tty->driver_data, tty->index);
 }
 
 static void pty_cleanup(struct tty_struct *tty)
 {
-	tty->port->itty = NULL;
 	tty_port_put(tty->port);
 }
 
@@ -463,7 +511,6 @@ static const struct tty_operations master_pty_ops_bsd = {
 	.flush_buffer = pty_flush_buffer,
 	.chars_in_buffer = pty_chars_in_buffer,
 	.unthrottle = pty_unthrottle,
-	.set_termios = pty_set_termios,
 	.ioctl = pty_bsd_ioctl,
 	.cleanup = pty_cleanup,
 	.resize = pty_resize,
@@ -482,6 +529,8 @@ static const struct tty_operations slave_pty_ops_bsd = {
 	.set_termios = pty_set_termios,
 	.cleanup = pty_cleanup,
 	.resize = pty_resize,
+	.start = pty_start,
+	.stop = pty_stop,
 	.remove = pty_remove
 };
 
@@ -621,6 +670,12 @@ static void pty_unix98_remove(struct tty_driver *driver, struct tty_struct *tty)
 {
 }
 
+/* this is called once with whichever end is closed last */
+static void pty_unix98_shutdown(struct tty_struct *tty)
+{
+	devpts_kill_index(tty->driver_data, tty->index);
+}
+
 static const struct tty_operations ptm_unix98_ops = {
 	.lookup = ptm_unix98_lookup,
 	.install = pty_unix98_install,
@@ -632,7 +687,6 @@ static const struct tty_operations ptm_unix98_ops = {
 	.flush_buffer = pty_flush_buffer,
 	.chars_in_buffer = pty_chars_in_buffer,
 	.unthrottle = pty_unthrottle,
-	.set_termios = pty_set_termios,
 	.ioctl = pty_unix98_ioctl,
 	.resize = pty_resize,
 	.shutdown = pty_unix98_shutdown,
@@ -651,6 +705,8 @@ static const struct tty_operations pty_unix98_ops = {
 	.chars_in_buffer = pty_chars_in_buffer,
 	.unthrottle = pty_unthrottle,
 	.set_termios = pty_set_termios,
+	.start = pty_start,
+	.stop = pty_stop,
 	.shutdown = pty_unix98_shutdown,
 	.cleanup = pty_cleanup,
 };
@@ -663,7 +719,7 @@ static const struct tty_operations pty_unix98_ops = {
  *	Allocate a unix98 pty master device from the ptmx driver.
  *
  *	Locking: tty_mutex protects the init_dev work. tty->count should
- * 		protect the rest.
+ *		protect the rest.
  *		allocated_ptys_lock handles the list of free pty numbers
  */
 
@@ -675,6 +731,9 @@ static int ptmx_open(struct inode *inode, struct file *filp)
 	int index;
 
 	nonseekable_open(inode, filp);
+
+	/* We refuse fsnotify events on ptmx, since it's a shared resource */
+	filp->f_mode |= FMODE_NONOTIFY;
 
 	retval = tty_alloc_file(filp);
 	if (retval)
@@ -704,6 +763,7 @@ static int ptmx_open(struct inode *inode, struct file *filp)
 	mutex_unlock(&tty_mutex);
 
 	set_bit(TTY_PTY_LOCK, &tty->flags); /* LOCK THE SLAVE */
+	tty->driver_data = inode;
 
 	tty_add_file(tty, filp);
 
@@ -714,14 +774,13 @@ static int ptmx_open(struct inode *inode, struct file *filp)
 		retval = PTR_ERR(slave_inode);
 		goto err_release;
 	}
+	tty->link->driver_data = slave_inode;
 
 	retval = ptm_driver->ops->open(tty, filp);
 	if (retval)
 		goto err_release;
 
 	tty_unlock(tty);
-	tty->driver_data = inode;
-	tty->link->driver_data = slave_inode;
 	return 0;
 err_release:
 	tty_unlock(tty);
@@ -797,7 +856,7 @@ static void __init unix98_pty_init(void)
 	cdev_init(&ptmx_cdev, &ptmx_fops);
 	if (cdev_add(&ptmx_cdev, MKDEV(TTYAUX_MAJOR, 2), 1) ||
 	    register_chrdev_region(MKDEV(TTYAUX_MAJOR, 2), 1, "/dev/ptmx") < 0)
-		panic("Couldn't register /dev/ptmx driver\n");
+		panic("Couldn't register /dev/ptmx driver");
 	device_create(tty_class, NULL, MKDEV(TTYAUX_MAJOR, 2), NULL, "ptmx");
 }
 

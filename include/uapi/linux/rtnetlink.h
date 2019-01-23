@@ -235,6 +235,7 @@ enum {
 #define RTPROT_NTK	15	/* Netsukuku */
 #define RTPROT_DHCP	16      /* DHCP client */
 #define RTPROT_MROUTED	17      /* Multicast daemon */
+#define RTPROT_BABEL	42      /* Babel daemon */
 
 /* rtm_scope
 
@@ -386,6 +387,8 @@ enum {
 #define RTAX_RTO_MIN RTAX_RTO_MIN
 	RTAX_INITRWND,
 #define RTAX_INITRWND RTAX_INITRWND
+	RTAX_QUICKACK,
+#define RTAX_QUICKACK RTAX_QUICKACK
 	__RTAX_MAX
 };
 
@@ -630,6 +633,7 @@ struct tcamsg {
 
 /* New extended info filters for IFLA_EXT_MASK */
 #define RTEXT_FILTER_VF		(1 << 0)
+#define RTEXT_FILTER_BRVLAN	(1 << 1)
 
 /* End of information exported to user level */
 

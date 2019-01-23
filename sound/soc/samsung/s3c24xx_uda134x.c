@@ -18,7 +18,7 @@
 #include <sound/soc.h>
 #include <sound/s3c24xx_uda134x.h>
 
-#include <plat/regs-iis.h>
+#include "regs-iis.h"
 
 #include "s3c24xx-i2s.h"
 
@@ -340,7 +340,6 @@ static struct platform_driver s3c24xx_uda134x_driver = {
 	.remove = s3c24xx_uda134x_remove,
 	.driver = {
 		.name = "s3c24xx_uda134x",
-		.owner = THIS_MODULE,
 	},
 };
 

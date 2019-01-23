@@ -295,15 +295,13 @@ void ieee80211_debugfs_key_update_default(struct ieee80211_sub_if_data *sdata)
 	char buf[50];
 	struct ieee80211_key *key;
 
-	if (!sdata->debugfs.dir)
+	if (!sdata->vif.debugfs_dir)
 		return;
 
 	lockdep_assert_held(&sdata->local->key_mtx);
 
-	if (sdata->debugfs.default_unicast_key) {
-		debugfs_remove(sdata->debugfs.default_unicast_key);
-		sdata->debugfs.default_unicast_key = NULL;
-	}
+	debugfs_remove(sdata->debugfs.default_unicast_key);
+	sdata->debugfs.default_unicast_key = NULL;
 
 	if (sdata->default_unicast_key) {
 		key = key_mtx_dereference(sdata->local,
@@ -311,13 +309,11 @@ void ieee80211_debugfs_key_update_default(struct ieee80211_sub_if_data *sdata)
 		sprintf(buf, "../keys/%d", key->debugfs.cnt);
 		sdata->debugfs.default_unicast_key =
 			debugfs_create_symlink("default_unicast_key",
-					       sdata->debugfs.dir, buf);
+					       sdata->vif.debugfs_dir, buf);
 	}
 
-	if (sdata->debugfs.default_multicast_key) {
-		debugfs_remove(sdata->debugfs.default_multicast_key);
-		sdata->debugfs.default_multicast_key = NULL;
-	}
+	debugfs_remove(sdata->debugfs.default_multicast_key);
+	sdata->debugfs.default_multicast_key = NULL;
 
 	if (sdata->default_multicast_key) {
 		key = key_mtx_dereference(sdata->local,
@@ -325,7 +321,7 @@ void ieee80211_debugfs_key_update_default(struct ieee80211_sub_if_data *sdata)
 		sprintf(buf, "../keys/%d", key->debugfs.cnt);
 		sdata->debugfs.default_multicast_key =
 			debugfs_create_symlink("default_multicast_key",
-					       sdata->debugfs.dir, buf);
+					       sdata->vif.debugfs_dir, buf);
 	}
 }
 
@@ -334,7 +330,7 @@ void ieee80211_debugfs_key_add_mgmt_default(struct ieee80211_sub_if_data *sdata)
 	char buf[50];
 	struct ieee80211_key *key;
 
-	if (!sdata->debugfs.dir)
+	if (!sdata->vif.debugfs_dir)
 		return;
 
 	key = key_mtx_dereference(sdata->local,
@@ -343,7 +339,7 @@ void ieee80211_debugfs_key_add_mgmt_default(struct ieee80211_sub_if_data *sdata)
 		sprintf(buf, "../keys/%d", key->debugfs.cnt);
 		sdata->debugfs.default_mgmt_key =
 			debugfs_create_symlink("default_mgmt_key",
-					       sdata->debugfs.dir, buf);
+					       sdata->vif.debugfs_dir, buf);
 	} else
 		ieee80211_debugfs_key_remove_mgmt_default(sdata);
 }

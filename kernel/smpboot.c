@@ -24,7 +24,7 @@
  */
 static DEFINE_PER_CPU(struct task_struct *, idle_threads);
 
-struct task_struct * __cpuinit idle_thread_get(unsigned int cpu)
+struct task_struct *idle_thread_get(unsigned int cpu)
 {
 	struct task_struct *tsk = per_cpu(idle_threads, cpu);
 
@@ -110,7 +110,7 @@ static int smpboot_thread_fn(void *data)
 		set_current_state(TASK_INTERRUPTIBLE);
 		preempt_disable();
 		if (kthread_should_stop()) {
-			set_current_state(TASK_RUNNING);
+			__set_current_state(TASK_RUNNING);
 			preempt_enable();
 			if (ht->cleanup)
 				ht->cleanup(td->cpu, cpu_online(td->cpu));
@@ -136,26 +136,27 @@ static int smpboot_thread_fn(void *data)
 		/* Check for state change setup */
 		switch (td->status) {
 		case HP_THREAD_NONE:
+			__set_current_state(TASK_RUNNING);
 			preempt_enable();
 			if (ht->setup)
 				ht->setup(td->cpu);
 			td->status = HP_THREAD_ACTIVE;
-			preempt_disable();
-			break;
+			continue;
+
 		case HP_THREAD_PARKED:
+			__set_current_state(TASK_RUNNING);
 			preempt_enable();
 			if (ht->unpark)
 				ht->unpark(td->cpu);
 			td->status = HP_THREAD_ACTIVE;
-			preempt_disable();
-			break;
+			continue;
 		}
 
 		if (!ht->thread_should_run(td->cpu)) {
-			preempt_enable();
+			preempt_enable_no_resched();
 			schedule();
 		} else {
-			set_current_state(TASK_RUNNING);
+			__set_current_state(TASK_RUNNING);
 			preempt_enable();
 			ht->thread_fn(td->cpu);
 		}
@@ -183,9 +184,20 @@ __smpboot_create_thread(struct smp_hotplug_thread *ht, unsigned int cpu)
 		kfree(td);
 		return PTR_ERR(tsk);
 	}
-
 	get_task_struct(tsk);
 	*per_cpu_ptr(ht->store, cpu) = tsk;
+	if (ht->create) {
+		/*
+		 * Make sure that the task has actually scheduled out
+		 * into park position, before calling the create
+		 * callback. At least the migration thread callback
+		 * requires that the task is off the runqueue.
+		 */
+		if (!wait_task_inactive(tsk, TASK_PARKED))
+			WARN_ON(1);
+		else
+			ht->create(cpu);
+	}
 	return 0;
 }
 
@@ -208,6 +220,8 @@ static void smpboot_unpark_thread(struct smp_hotplug_thread *ht, unsigned int cp
 {
 	struct task_struct *tsk = *per_cpu_ptr(ht->store, cpu);
 
+	if (ht->pre_unpark)
+		ht->pre_unpark(cpu);
 	kthread_unpark(tsk);
 }
 
@@ -225,7 +239,7 @@ static void smpboot_park_thread(struct smp_hotplug_thread *ht, unsigned int cpu)
 {
 	struct task_struct *tsk = *per_cpu_ptr(ht->store, cpu);
 
-	if (tsk)
+	if (tsk && !ht->selfparking)
 		kthread_park(tsk);
 }
 
@@ -266,6 +280,7 @@ int smpboot_register_percpu_thread(struct smp_hotplug_thread *plug_thread)
 	unsigned int cpu;
 	int ret = 0;
 
+	get_online_cpus();
 	mutex_lock(&smpboot_threads_lock);
 	for_each_online_cpu(cpu) {
 		ret = __smpboot_create_thread(plug_thread, cpu);
@@ -278,6 +293,7 @@ int smpboot_register_percpu_thread(struct smp_hotplug_thread *plug_thread)
 	list_add(&plug_thread->list, &hotplug_threads);
 out:
 	mutex_unlock(&smpboot_threads_lock);
+	put_online_cpus();
 	return ret;
 }
 EXPORT_SYMBOL_GPL(smpboot_register_percpu_thread);

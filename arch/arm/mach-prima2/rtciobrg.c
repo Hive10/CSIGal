@@ -104,6 +104,7 @@ EXPORT_SYMBOL_GPL(sirfsoc_rtc_iobrg_writel);
 
 static const struct of_device_id rtciobrg_ids[] = {
 	{ .compatible = "sirf,prima2-rtciobg" },
+	{ .compatible = "sirf,marco-rtciobg" },
 	{}
 };
 
@@ -122,7 +123,6 @@ static struct platform_driver sirfsoc_rtciobrg_driver = {
 	.probe		= sirfsoc_rtciobrg_probe,
 	.driver = {
 		.name = "sirfsoc-rtciobrg",
-		.owner = THIS_MODULE,
 		.of_match_table	= rtciobrg_ids,
 	},
 };
@@ -136,4 +136,4 @@ postcore_initcall(sirfsoc_rtciobrg_init);
 MODULE_AUTHOR("Zhiwu Song <zhiwu.song@csr.com>, "
 		"Barry Song <baohua.song@csr.com>");
 MODULE_DESCRIPTION("CSR SiRFprimaII rtc io bridge");
-MODULE_LICENSE("GPL");
+MODULE_LICENSE("GPL v2");

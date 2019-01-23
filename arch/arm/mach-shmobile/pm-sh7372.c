@@ -21,13 +21,15 @@
 #include <linux/irq.h>
 #include <linux/bitrev.h>
 #include <linux/console.h>
+
 #include <asm/cpuidle.h>
 #include <asm/io.h>
 #include <asm/tlbflush.h>
 #include <asm/suspend.h>
-#include <mach/common.h>
-#include <mach/sh7372.h>
-#include <mach/pm-rmobile.h>
+
+#include "common.h"
+#include "pm-rmobile.h"
+#include "sh7372.h"
 
 /* DBG */
 #define DBGREG1 IOMEM(0xe6100020)
@@ -351,6 +353,9 @@ static void sh7372_enter_a4s_common(int pllc0_on)
 
 static void sh7372_pm_setup_smfram(void)
 {
+	/* pass physical address of cpu_resume() to assembly resume code */
+	sh7372_cpu_resume = virt_to_phys(cpu_resume);
+
 	memcpy((void *)SMFRAM, sh7372_resume_core_standby_sysc, 0x100);
 }
 #else
@@ -410,17 +415,14 @@ static int sh7372_enter_a4s(struct cpuidle_device *dev,
 static struct cpuidle_driver sh7372_cpuidle_driver = {
 	.name			= "sh7372_cpuidle",
 	.owner			= THIS_MODULE,
-	.en_core_tk_irqen	= 1,
 	.state_count		= 5,
 	.safe_state_index	= 0, /* C1 */
 	.states[0] = ARM_CPUIDLE_WFI_STATE,
-	.states[0].enter = shmobile_enter_wfi,
 	.states[1] = {
 		.name = "C2",
 		.desc = "Core Standby Mode",
 		.exit_latency = 10,
 		.target_residency = 20 + 10,
-		.flags = CPUIDLE_FLAG_TIME_VALID,
 		.enter = sh7372_enter_core_standby,
 	},
 	.states[2] = {
@@ -428,7 +430,6 @@ static struct cpuidle_driver sh7372_cpuidle_driver = {
 		.desc = "A3SM PLL ON",
 		.exit_latency = 20,
 		.target_residency = 30 + 20,
-		.flags = CPUIDLE_FLAG_TIME_VALID,
 		.enter = sh7372_enter_a3sm_pll_on,
 	},
 	.states[3] = {
@@ -436,7 +437,6 @@ static struct cpuidle_driver sh7372_cpuidle_driver = {
 		.desc = "A3SM PLL OFF",
 		.exit_latency = 120,
 		.target_residency = 30 + 120,
-		.flags = CPUIDLE_FLAG_TIME_VALID,
 		.enter = sh7372_enter_a3sm_pll_off,
 	},
 	.states[4] = {
@@ -444,18 +444,17 @@ static struct cpuidle_driver sh7372_cpuidle_driver = {
 		.desc = "A4S PLL OFF",
 		.exit_latency = 240,
 		.target_residency = 30 + 240,
-		.flags = CPUIDLE_FLAG_TIME_VALID,
 		.enter = sh7372_enter_a4s,
 		.disabled = true,
 	},
 };
 
-static void sh7372_cpuidle_init(void)
+static void __init sh7372_cpuidle_init(void)
 {
 	shmobile_cpuidle_set_driver(&sh7372_cpuidle_driver);
 }
 #else
-static void sh7372_cpuidle_init(void) {}
+static void __init sh7372_cpuidle_init(void) {}
 #endif
 
 #ifdef CONFIG_SUSPEND
