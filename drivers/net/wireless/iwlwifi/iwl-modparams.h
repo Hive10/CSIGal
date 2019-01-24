@@ -115,13 +115,14 @@ struct iwl_mod_params {
 	int sw_crypto;
 	unsigned int disable_11n;
 	int amsdu_size_8K;
-	int restart_fw;
+	bool restart_fw;
 	int connector_log;
 	bool plcp_check;
 	// OLD
-	bool restart_fw;
-	int  wd_disable;
+	bool  wd_disable;
 	bool bt_coex_active;
+	bool bt_ch_announce;
+	bool auto_agg;
 	int led_mode;
 	bool power_save;
 	int power_level;

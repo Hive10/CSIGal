@@ -1441,7 +1441,9 @@ struct iwl_mod_params iwlwifi_mod_params = {
 	.restart_fw = true,
 	.bt_coex_active = true,
 	.power_level = IWL_POWER_INDEX_1,
+#ifdef CONFIG_IWLWIFI_DEBUG
 	.debug_level = IWL_DL_FW_ERRORS,
+#endif
 	.bt_ch_announce = true,
 	.auto_agg = true,
 	.wd_disable = true,

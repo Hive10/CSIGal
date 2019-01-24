@@ -3961,7 +3961,6 @@ struct iwl5000_dsp_debug {
 #define ROTATE_HT40	16
 #define ROTATE_SGI	32
 #define ROTATE_SKIP	64
-=======
 #define RF_KILL_INDICATOR_FOR_WOWLAN	0x87
 
 /*

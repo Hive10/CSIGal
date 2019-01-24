@@ -1067,7 +1067,7 @@ static int iwl_init_drv(struct iwl_priv *priv)
 	priv->monitor_tx_rate = 0;	/* Disabled */
 	priv->bcast_tx_rate = 0;	/* Disabled */
 
-	priv->ucode_owner = IWL_OWNERSHIP_DRIVER;
+	//priv->ucode_owner = IWL_OWNERSHIP_DRIVER;
 
 	priv->rx_statistics_jiffies = jiffies;
 

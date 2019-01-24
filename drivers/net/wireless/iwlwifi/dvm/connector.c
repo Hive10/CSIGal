@@ -52,7 +52,7 @@ static struct cn_msg *cn_msg_buf[CN_BUF_SIZE];
 static u32 cn_buf_read, cn_buf_write;
 
 /**
- * Enqueues a connector message into the buffer. Will drop and free if full.
+ * Enqueues a connctor message into the buffer. Will drop and free if full.
  */
 static void connector_enqueue_msg(struct cn_msg *m)
 {
@@ -107,7 +107,7 @@ static void connector_send_all(void)
 
 	/* Loop through buffer sending messages */
 	for (i = start; i != end; i = ((i+1) % CN_BUF_SIZE)) {
-		cn_netlink_send(cn_msg_buf[i], 0, GFP_ATOMIC);
+		cn_netlink_send(cn_msg_buf[i], 0, 0, GFP_ATOMIC);
 		kfree(cn_msg_buf[i]);
 	}
 
